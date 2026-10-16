@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign Safe: U-Topia Transaction Guardian</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/5.7.2/ethers.umd.min.js"></script>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen">
+<div class="max-w-2xl mx-auto px-4 py-8 space-y-6">
+    <header class="flex items-center justify-between gap-4">
+        <div>
+            <h1 class="text-2xl font-bold text-emerald-400">🛡️ Sign Safe</h1>
+            <p class="text-sm text-slate-400">U-Topia Transaction Guardian · Avalanche Fuji Testnet</p>
+        </div>
+        <button id="connectBtn" onclick="connectWallet()" class="bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium px-4 py-2 rounded-lg transition whitespace-nowrap">
+            Connect Wallet
+        </button>
+    </header>
+
+    <main class="space-y-6">
+        <!-- Wallet Info -->
+        <div id="walletInfo" class="hidden bg-slate-800 p-4 rounded-xl border border-slate-700 text-sm space-y-1">
+            <p><strong>Connected Account:</strong> <span id="accountAddress" class="text-emerald-300 font-mono break-all"></span></p>
+            <p><strong>Network:</strong> <span id="networkName" class="text-emerald-300"></span></p>
+            <p><strong>Balance:</strong> <span id="balance" class="text-emerald-300"></span></p>
+        </div>
+
+        <!-- Transaction Input Form -->
+        <div class="bg-slate-800 p-6 rounded-xl border border-slate-700 space-y-4">
+            <h2 class="text-lg font-semibold text-slate-200">Simulate & Inspect Transaction</h2>
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">Target Contract / Recipient Address</label>
+                <input type="text" id="targetAddress" placeholder="0x..." class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-sm focus:outline-none focus:border-emerald-500 font-mono">
+            </div>
+            <div>
+                <label class="block text-sm text-slate-400 mb-1">Amount (AVAX on Fuji Testnet)</label>
+                <input type="number" id="sendAmount" value="0.01" step="0.001" min="0" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-sm focus:outline-none focus:border-emerald-500">
+            </div>
+            <button id="analyzeBtn" onclick="analyzeTransaction()" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-medium py-3 rounded-lg transition">
+                🤖 U-Bot AI: Analyze Security & Risks
+            </button>
+        </div>
+
+        <!-- Analysis Result Panel -->
+        <div id="resultPanel" class="hidden bg-slate-800 p-6 rounded-xl border border-slate-700 space-y-4">
+            <h3 class="text-md font-semibold text-slate-200">U-Bot Security Evaluation</h3>
+            <div id="riskBadge" class="inline-block px-3 py-1 rounded-full text-xs font-bold"></div>
+            <ul id="checkList" class="text-sm space-y-1"></ul>
+            <p id="aiExplanation" class="text-sm text-slate-300 bg-slate-900 p-4 rounded-lg border border-slate-700/50"></p>
+            <label id="ackWrap" class="hidden flex items-center gap-2 text-sm text-amber-300">
+                <input type="checkbox" id="ackRisk" onchange="updateExecBtn()"> I understand the risks and still want to send.
+            </label>
+            <button id="execBtn" onclick="executeTransaction()" class="hidden w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-medium py-3 rounded-lg transition">
+                Sign & Send Secure Transaction
+            </button>
+        </div>
+
+        <!-- Tx Result -->
+        <div id="txPanel" class="hidden bg-slate-800 p-4 rounded-xl border border-emerald-700 text-sm space-y-1">
+            <p class="font-semibold text-emerald-400" id="txStatus">Transaction submitted</p>
+            <p class="font-mono break-all" id="txHash"></p>
+            <a id="txLink" target="_blank" rel="noopener" class="text-indigo-300 underline">View on SnowTrace (Fuji) ↗</a>
+        </div>
+
+        <!-- Status Logs -->
+        <div id="statusLog" class="text-xs text-slate-400 font-mono bg-black/40 p-3 rounded-lg break-all">
+            Status: Ready. Connect wallet to start.
+        </div>
+    </main>
+
+    <footer class="text-xs text-slate-500 text-center pt-4">
+        Testnet only · Get free Fuji AVAX from the
+        <a href="https://core.app/tools/testnet-faucet/" target="_blank" rel="noopener" class="underline">Avalanche Faucet</a>
+    </footer>
+</div>
+
+<script>
+    const FUJI = {
+        chainId: '0xa869', // 43113
+        chainName: 'Avalanche Fuji C-Chain',
+        nativeCurrency: { name: 'Avalanche', symbol: 'AVAX', decimals: 18 },
+        rpcUrls: ['https://api.avax-test.network/ext/bc/C/rpc'],
+        blockExplorerUrls: ['https://testnet.snowtrace.io/']
+    };
+    const FUJI_CHAIN_ID = 43113;
+
+    // Known dangerous / burn addresses
+    const BURN_ADDRESSES = [
+        '0x0000000000000000000000000000000000000000',
+        '0x000000000000000000000000000000000000dead',
+        '0xdead000000000000000042069420694206942069'
+    ];
+
+    let provider, signer, userAddress;
+    let lastAnalysis = null;
+
+    async function ensureFuji() {
+        try {
+            await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: FUJI.chainId }] });
+        } catch (err) {
+            if (err.code === 4902) {
+                await window.ethereum.request({ method: 'wallet_addEthereumChain', params: [FUJI] });
+            } else {
+                throw err;
+            }
+        }
+    }
+
+    async function refreshWalletInfo() {
+        provider = new ethers.providers.Web3Provider(window.ethereum, 'any');
+        signer = provider.getSigner();
+        userAddress = await signer.getAddress();
+        const network = await provider.getNetwork();
+        const bal = await provider.getBalance(userAddress);
+
+        document.getElementById('walletInfo').classList.remove('hidden');
+        document.getElementById('accountAddress').innerText = userAddress;
+        const onFuji = network.chainId === FUJI_CHAIN_ID;
+        document.getElementById('networkName').innerText = onFuji
+            ? `Avalanche Fuji (ChainID: ${network.chainId}) ✅`
+            : `${network.name} (ChainID: ${network.chainId}) ⚠️ Please switch to Fuji`;
+        document.getElementById('balance').innerText = `${Number(ethers.utils.formatEther(bal)).toFixed(4)} AVAX`;
+        document.getElementById('connectBtn').innerText = 'Connected';
+    }
+
+    async function connectWallet() {
+        if (typeof window.ethereum === 'undefined') {
+            alert("Please install MetaMask or a Web3 wallet!");
+            return;
+        }
+        try {
+            await window.ethereum.request({ method: 'eth_requestAccounts' });
+            await ensureFuji();
+            await refreshWalletInfo();
+            logMessage("Wallet connected to Avalanche Fuji successfully.");
+
+            window.ethereum.on('accountsChanged', () => refreshWalletInfo().catch(() => {}));
+            window.ethereum.on('chainChanged', () => refreshWalletInfo().catch(() => {}));
+        } catch (err) {
+            logMessage("Error connecting wallet: " + (err.message || err));
+        }
+    }
+
+    // U-Bot rule engine: runs on-chain checks against Fuji before the user signs
+    async function analyzeTransaction() {
+        const target = document.getElementById('targetAddress').value.trim();
+        const amount = document.getElementById('sendAmount').value;
+
+        if (!signer) {
+            alert("Please connect your wallet first.");
+            return;
+        }
+        if (!target || !ethers.utils.isAddress(target)) {
+            alert("Please enter a valid recipient address.");
+            return;
+        }
+        if (!amount || Number(amount) <= 0) {
+            alert("Please enter an amount greater than 0.");
+            return;
+        }
+
+        logMessage("U-Bot is inspecting the recipient on Fuji...");
+        const btn = document.getElementById('analyzeBtn');
+        btn.disabled = true;
+        btn.innerText = '🤖 U-Bot is analyzing...';
+
+        try {
+            const network = await provider.getNetwork();
+            const value = ethers.utils.parseEther(amount);
+            const [balance, code, nonce, gasPrice] = await Promise.all([
+                provider.getBalance(userAddress),
+                provider.getCode(target),
+                provider.getTransactionCount(target),
+                provider.getGasPrice()
+            ]);
+            const estFee = gasPrice.mul(21000);
+            const isContract = code && code !== '0x';
+            const lower = target.toLowerCase();
+
+            // Each check: level = 'ok' | 'warn' | 'danger'
+            const checks = [];
+            let score = 100;
+            const add = (level, text, penalty = 0) => { checks.push({ level, text }); score -= penalty; };
+
+            if (network.chainId !== FUJI_CHAIN_ID) add('danger', `Wrong network (ChainID ${network.chainId}). Switch to Fuji 43113.`, 100);
+            else add('ok', 'Network is Avalanche Fuji Testnet (43113).');
+
+            if (BURN_ADDRESSES.includes(lower)) add('danger', 'Recipient is a null/burn address — funds will be lost forever.', 100);
+            else add('ok', 'Recipient is not a known burn address.');
+
+            if (lower === userAddress.toLowerCase()) add('warn', 'You are sending to your own address.', 20);
+
+            if (isContract) add('warn', 'Recipient is a smart contract. Make sure it can accept AVAX and is the contract you intend.', 25);
+            else add('ok', 'Recipient is a regular wallet (EOA).');
+
+            if (!isContract && nonce === 0) add('warn', 'Recipient has never sent a transaction on Fuji (fresh address). Double-check for typos or address poisoning.', 20);
+            else if (!isContract) add('ok', `Recipient has on-chain history (${nonce} outgoing tx).`);
+
+            if (value.add(estFee).gt(balance)) add('danger', 'Insufficient balance for amount + gas.', 100);
+            else if (value.mul(100).gt(balance.mul(50))) add('warn', 'This transfer is more than 50% of your balance.', 15);
+            else add('ok', 'Amount is within a safe portion of your balance.');
+
+            score = Math.max(0, score);
+            const hasDanger = checks.some(c => c.level === 'danger');
+            const hasWarn = checks.some(c => c.level === 'warn');
+            lastAnalysis = { target, amount, hasDanger, hasWarn };
+
+            renderResult({ checks, score, hasDanger, hasWarn, amount, estFee });
+            logMessage(`U-Bot analysis completed. Score: ${score}/100.`);
+        } catch (err) {
+            logMessage("Analysis failed: " + (err.message || err));
+        } finally {
+            btn.disabled = false;
+            btn.innerText = '🤖 U-Bot AI: Analyze Security & Risks';
+        }
+    }
+
+    function renderResult({ checks, score, hasDanger, hasWarn, amount, estFee }) {
+        const riskBadge = document.getElementById('riskBadge');
+        const aiExplanation = document.getElementById('aiExplanation');
+        const execBtn = document.getElementById('execBtn');
+        const ackWrap = document.getElementById('ackWrap');
+        const icons = { ok: '✅', warn: '⚠️', danger: '⛔' };
+        const colors = { ok: 'text-emerald-300', warn: 'text-amber-300', danger: 'text-red-400' };
+
+        document.getElementById('resultPanel').classList.remove('hidden');
+        document.getElementById('checkList').innerHTML = checks
+            .map(c => `<li class="${colors[c.level]}">${icons[c.level]} ${c.text}</li>`).join('');
+        document.getElementById('ackRisk').checked = false;
+
+        if (hasDanger) {
+            riskBadge.className = "inline-block px-3 py-1 rounded-full text-xs font-bold bg-red-500/20 text-red-400 border border-red-500/30";
+            riskBadge.innerText = `HIGH RISK — BLOCKED (Score: ${score}/100)`;
+            aiExplanation.innerText = "U-Bot Warning: This transaction has a critical risk. Signing has been blocked to protect your funds.";
+            execBtn.classList.add('hidden');
+            ackWrap.classList.add('hidden');
+        } else if (hasWarn) {
+            riskBadge.className = "inline-block px-3 py-1 rounded-full text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30";
+            riskBadge.innerText = `CAUTION (Score: ${score}/100)`;
+            aiExplanation.innerText = `U-Bot Insight: Transferring ${amount} AVAX (est. gas ${ethers.utils.formatEther(estFee)} AVAX). Some warnings were found — review them and confirm before signing.`;
+            execBtn.classList.remove('hidden');
+            ackWrap.classList.remove('hidden');
+        } else {
+            riskBadge.className = "inline-block px-3 py-1 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30";
+            riskBadge.innerText = `LOW RISK (Score: ${score}/100)`;
+            aiExplanation.innerText = `U-Bot Insight: Transferring ${amount} AVAX on Avalanche Fuji Testnet (est. gas ${ethers.utils.formatEther(estFee)} AVAX). All checks passed.`;
+            execBtn.classList.remove('hidden');
+            ackWrap.classList.add('hidden');
+        }
+        updateExecBtn();
+    }
+
+    function updateExecBtn() {
+        const execBtn = document.getElementById('execBtn');
+        execBtn.disabled = !!(lastAnalysis && lastAnalysis.hasWarn && !document.getElementById('ackRisk').checked);
+    }
+
+    async function executeTransaction() {
+        const target = document.getElementById('targetAddress').value.trim();
+        const amount = document.getElementById('sendAmount').value;
+
+        // Require a fresh analysis of exactly what is about to be signed
+        if (!lastAnalysis || lastAnalysis.target !== target || lastAnalysis.amount !== amount) {
+            alert("Inputs changed since the last analysis. Please run U-Bot again.");
+            return;
+        }
+        if (lastAnalysis.hasDanger) return;
+
+        try {
+            const network = await provider.getNetwork();
+            if (network.chainId !== FUJI_CHAIN_ID) {
+                await ensureFuji();
+                await refreshWalletInfo();
+            }
+
+            logMessage("Waiting for wallet signature...");
+            const tx = await signer.sendTransaction({ to: target, value: ethers.utils.parseEther(amount) });
+
+            const url = `https://testnet.snowtrace.io/tx/${tx.hash}`;
+            document.getElementById('txPanel').classList.remove('hidden');
+            document.getElementById('txStatus').innerText = '⏳ Transaction submitted — waiting for confirmation...';
+            document.getElementById('txHash').innerText = tx.hash;
+            document.getElementById('txLink').href = url;
+            logMessage(`Transaction sent! Hash: ${tx.hash}`);
+
+            const receipt = await tx.wait();
+            document.getElementById('txStatus').innerText = receipt.status === 1
+                ? `✅ Confirmed in block ${receipt.blockNumber}`
+                : '❌ Transaction reverted';
+            logMessage(`Transaction confirmed in block ${receipt.blockNumber}.`);
+            refreshWalletInfo().catch(() => {});
+        } catch (err) {
+            logMessage("Transaction failed: " + (err.reason || err.message || err));
+        }
+    }
+
+    function logMessage(msg) {
+        document.getElementById('statusLog').innerText = "Status: " + msg;
+    }
+</script>
+</body>
+</html>
